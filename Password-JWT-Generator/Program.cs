@@ -11,6 +11,9 @@ sealed class Settings
     public int Length = 16;
     public int Count = 1;
     public CharSets Sets = CharSets.All;
+    public string? Custom;
+    public bool NoAmbiguous;
+    public bool RequireEach = true;
 }
 
 static class Program
@@ -20,6 +23,7 @@ static class Program
     const string Digits = "0123456789";
     // No quotes, backtick or backslash, so passwords are safe to paste into shells and config files.
     const string Symbols = "!@#$%^&*()-_=+[]{};:,.<>?/~";
+    const string Ambiguous = "0O1lI|";
 
     const int MaxLength = 1024;
     const int MaxCount = 100;
@@ -52,6 +56,9 @@ static class Program
                 case "-l": case "--length": s.Length = ParseInt(Next(), arg); break;
                 case "-n": case "--count": s.Count = ParseInt(Next(), arg); break;
                 case "-c": case "--charset": s.Sets = ParseCharset(Next()); break;
+                case "--custom": s.Custom = Next(); break;
+                case "-x": case "--no-ambiguous": s.NoAmbiguous = true; break;
+                case "--no-require": s.RequireEach = false; break;
                 default: throw new ArgumentException($"Unknown option '{arg}'.");
             }
         }
@@ -68,7 +75,7 @@ static class Program
         var groups = GetGroups(s);
         string pool = new string(groups.SelectMany(g => g).Distinct().ToArray());
 
-        bool require = groups.Count > 1;
+        bool require = s.RequireEach && groups.Count > 1;
         if (require && groups.Count > s.Length)
             throw new ArgumentException($"Length {s.Length} is too short to include a character from each of the {groups.Count} sets.");
 
@@ -81,10 +88,23 @@ static class Program
     static List<string> GetGroups(Settings s)
     {
         var groups = new List<string>();
-        if (s.Sets.HasFlag(CharSets.Lower)) groups.Add(Lower);
-        if (s.Sets.HasFlag(CharSets.Upper)) groups.Add(Upper);
-        if (s.Sets.HasFlag(CharSets.Digits)) groups.Add(Digits);
-        if (s.Sets.HasFlag(CharSets.Symbols)) groups.Add(Symbols);
+
+        if (!string.IsNullOrEmpty(s.Custom))
+        {
+            groups.Add(new string(s.Custom.Distinct().ToArray()));
+        }
+        else
+        {
+            if (s.Sets.HasFlag(CharSets.Lower)) groups.Add(Lower);
+            if (s.Sets.HasFlag(CharSets.Upper)) groups.Add(Upper);
+            if (s.Sets.HasFlag(CharSets.Digits)) groups.Add(Digits);
+            if (s.Sets.HasFlag(CharSets.Symbols)) groups.Add(Symbols);
+        }
+
+        if (s.NoAmbiguous)
+            groups = groups.Select(g => new string(g.Where(c => !Ambiguous.Contains(c)).ToArray())).ToList();
+
+        groups.RemoveAll(g => g.Length == 0);
 
         if (groups.Count == 0)
             throw new ArgumentException("No characters available. Pick at least one character set.");
