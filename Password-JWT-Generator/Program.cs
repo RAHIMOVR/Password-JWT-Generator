@@ -8,12 +8,14 @@ enum CharSets { None = 0, Lower = 1, Upper = 2, Digits = 4, Symbols = 8, All = L
 
 sealed class Settings
 {
-    public int Length = 16;
+    public int? Length;
+    public int? Bits;
     public int Count = 1;
     public CharSets Sets = CharSets.All;
     public string? Custom;
     public bool NoAmbiguous;
     public bool RequireEach = true;
+    public bool Quiet;
 }
 
 static class Program
@@ -25,7 +27,8 @@ static class Program
     const string Symbols = "!@#$%^&*()-_=+[]{};:,.<>?/~";
     const string Ambiguous = "0O1lI|";
 
-    const int MaxLength = 1024;
+    const int DefaultLength = 16, MaxLength = 1024;
+    const int MinBits = 8, MaxBits = 256;
     const int MaxCount = 100;
 
     static int Main(string[] args)
@@ -54,11 +57,13 @@ static class Program
             switch (arg)
             {
                 case "-l": case "--length": s.Length = ParseInt(Next(), arg); break;
+                case "-b": case "--bits": s.Bits = ParseInt(Next(), arg); break;
                 case "-n": case "--count": s.Count = ParseInt(Next(), arg); break;
                 case "-c": case "--charset": s.Sets = ParseCharset(Next()); break;
                 case "--custom": s.Custom = Next(); break;
                 case "-x": case "--no-ambiguous": s.NoAmbiguous = true; break;
                 case "--no-require": s.RequireEach = false; break;
+                case "-q": case "--quiet": s.Quiet = true; break;
                 default: throw new ArgumentException($"Unknown option '{arg}'.");
             }
         }
@@ -69,19 +74,28 @@ static class Program
     static int RunPassword(Settings s)
     {
         CheckCount(s.Count);
-        if (s.Length < 1 || s.Length > MaxLength)
-            throw new ArgumentException($"Length must be between 1 and {MaxLength}.");
+        if (s.Length is not null && s.Bits is not null)
+            throw new ArgumentException("Use either --length or --bits, not both.");
 
         var groups = GetGroups(s);
         string pool = new string(groups.SelectMany(g => g).Distinct().ToArray());
+        int length = s.Bits is int bits ? LengthForBits(bits, pool.Length) : s.Length ?? DefaultLength;
+
+        if (length < 1 || length > MaxLength)
+            throw new ArgumentException($"Length must be between 1 and {MaxLength}.");
 
         bool require = s.RequireEach && groups.Count > 1;
-        if (require && groups.Count > s.Length)
-            throw new ArgumentException($"Length {s.Length} is too short to include a character from each of the {groups.Count} sets.");
+        if (require && groups.Count > length)
+            throw new ArgumentException($"Length {length} is too short to include a character from each of the {groups.Count} sets.");
 
         for (int i = 0; i < s.Count; i++)
-            Console.WriteLine(GeneratePassword(pool, groups, s.Length, require));
+            Console.WriteLine(GeneratePassword(pool, groups, length, require));
 
+        if (!s.Quiet)
+        {
+            double entropy = length * Math.Log2(pool.Length);
+            Info($"length {length} | pool {pool.Length} chars | ~{entropy:F1} bits of entropy ({Rate(entropy)})");
+        }
         return 0;
     }
 
@@ -128,10 +142,36 @@ static class Program
         }
     }
 
+    // Entropy = length × log2(pool size), so length = ceil(bits / log2(pool size)).
+    static int LengthForBits(int bits, int poolSize)
+    {
+        CheckBits(bits);
+        if (poolSize < 2)
+            throw new ArgumentException("At least 2 distinct characters are needed to reach a target entropy.");
+
+        // The epsilon stops floating-point noise from rounding exact results up (e.g. 256 / 4.0 = 64).
+        return (int)Math.Ceiling(bits / Math.Log2(poolSize) - 1e-9);
+    }
+
+    static string Rate(double bits) => bits switch
+    {
+        < 40 => "weak",
+        < 60 => "fair",
+        < 80 => "strong",
+        < 128 => "very strong",
+        _ => "excellent",
+    };
+
     static void CheckCount(int count)
     {
         if (count < 1 || count > MaxCount)
             throw new ArgumentException($"Count must be between 1 and {MaxCount}.");
+    }
+
+    static void CheckBits(int bits)
+    {
+        if (bits < MinBits || bits > MaxBits)
+            throw new ArgumentException($"Bits must be between {MinBits} and {MaxBits}.");
     }
 
     static int ParseInt(string value, string option) =>
@@ -157,4 +197,7 @@ static class Program
         }
         return sets;
     }
+
+    // Info goes to stderr so `passgen | clip` or `$(passgen)` captures only the password.
+    static void Info(string message) => Console.Error.WriteLine(message);
 }
