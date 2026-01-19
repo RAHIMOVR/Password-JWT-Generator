@@ -1,10 +1,13 @@
 ﻿using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace PassGen;
 
 [Flags]
 enum CharSets { None = 0, Lower = 1, Upper = 2, Digits = 4, Symbols = 8, All = Lower | Upper | Digits | Symbols }
+
+enum TokenFormat { Hex, Base64, Base64Url, Base32 }
 
 sealed class Settings
 {
@@ -16,6 +19,7 @@ sealed class Settings
     public bool NoAmbiguous;
     public bool RequireEach = true;
     public bool Quiet;
+    public TokenFormat Format = TokenFormat.Hex;
 }
 
 static class Program
@@ -26,6 +30,7 @@ static class Program
     // No quotes, backtick or backslash, so passwords are safe to paste into shells and config files.
     const string Symbols = "!@#$%^&*()-_=+[]{};:,.<>?/~";
     const string Ambiguous = "0O1lI|";
+    const string Base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
     const int DefaultLength = 16, MaxLength = 1024;
     const int MinBits = 8, MaxBits = 256;
@@ -47,8 +52,10 @@ static class Program
     static int Run(string[] args)
     {
         var a = new List<string>(args);
-        var s = new Settings();
+        bool tokenMode = a.Count > 0 && a[0] == "token";
+        if (tokenMode) a.RemoveAt(0);
 
+        var s = new Settings();
         for (int i = 0; i < a.Count; i++)
         {
             string arg = a[i];
@@ -63,13 +70,16 @@ static class Program
                 case "--custom": s.Custom = Next(); break;
                 case "-x": case "--no-ambiguous": s.NoAmbiguous = true; break;
                 case "--no-require": s.RequireEach = false; break;
+                case "-f": case "--format": s.Format = ParseFormat(Next()); break;
                 case "-q": case "--quiet": s.Quiet = true; break;
                 default: throw new ArgumentException($"Unknown option '{arg}'.");
             }
         }
 
-        return RunPassword(s);
+        return tokenMode ? RunToken(s) : RunPassword(s);
     }
+
+    // ---------- Passwords ----------
 
     static int RunPassword(Settings s)
     {
@@ -162,6 +172,58 @@ static class Program
         _ => "excellent",
     };
 
+    // ---------- Tokens ----------
+
+    static int RunToken(Settings s)
+    {
+        CheckCount(s.Count);
+        int bits = s.Bits ?? MaxBits;
+        CheckBits(bits);
+        int byteCount = (bits + 7) / 8; // rounded up to whole bytes
+
+        for (int i = 0; i < s.Count; i++)
+            Console.WriteLine(Encode(RandomNumberGenerator.GetBytes(byteCount), s.Format));
+
+        if (!s.Quiet)
+            Info($"{byteCount * 8} random bits | {s.Format.ToString().ToLowerInvariant()}");
+        return 0;
+    }
+
+    static string Encode(byte[] data, TokenFormat format) => format switch
+    {
+        TokenFormat.Hex => Convert.ToHexString(data).ToLowerInvariant(),
+        TokenFormat.Base64 => Convert.ToBase64String(data),
+        TokenFormat.Base64Url => Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_'),
+        TokenFormat.Base32 => ToBase32(data),
+        _ => throw new ArgumentException($"Unknown format '{format}'."),
+    };
+
+    // RFC 4648 Base32 without padding.
+    static string ToBase32(byte[] data)
+    {
+        var sb = new StringBuilder((data.Length * 8 + 4) / 5);
+        int buffer = 0, bitsLeft = 0;
+
+        foreach (byte b in data)
+        {
+            buffer = (buffer << 8) | b;
+            bitsLeft += 8;
+            while (bitsLeft >= 5)
+            {
+                sb.Append(Base32Alphabet[(buffer >> (bitsLeft - 5)) & 31]);
+                bitsLeft -= 5;
+            }
+            buffer &= (1 << bitsLeft) - 1; // keep only the unused bits
+        }
+
+        if (bitsLeft > 0)
+            sb.Append(Base32Alphabet[(buffer << (5 - bitsLeft)) & 31]);
+
+        return sb.ToString();
+    }
+
+    // ---------- Helpers ----------
+
     static void CheckCount(int count)
     {
         if (count < 1 || count > MaxCount)
@@ -197,6 +259,15 @@ static class Program
         }
         return sets;
     }
+
+    static TokenFormat ParseFormat(string value) => value.ToLowerInvariant() switch
+    {
+        "hex" => TokenFormat.Hex,
+        "base64" or "b64" => TokenFormat.Base64,
+        "base64url" or "b64url" or "url" => TokenFormat.Base64Url,
+        "base32" or "b32" => TokenFormat.Base32,
+        _ => throw new ArgumentException($"Unknown format '{value}'. Use hex, base64, base64url or base32."),
+    };
 
     // Info goes to stderr so `passgen | clip` or `$(passgen)` captures only the password.
     static void Info(string message) => Console.Error.WriteLine(message);
