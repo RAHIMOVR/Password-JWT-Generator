@@ -55,6 +55,8 @@ static class Program
         bool tokenMode = a.Count > 0 && a[0] == "token";
         if (tokenMode) a.RemoveAt(0);
 
+        if (a.Contains("-i") || a.Contains("--interactive")) return Interactive();
+
         var s = new Settings();
         for (int i = 0; i < a.Count; i++)
         {
@@ -220,6 +222,43 @@ static class Program
             sb.Append(Base32Alphabet[(buffer << (5 - bitsLeft)) & 31]);
 
         return sb.ToString();
+    }
+
+    // ---------- Interactive mode ----------
+
+    static int Interactive()
+    {
+        Console.WriteLine("PassGen interactive mode (press Enter to accept the [default])");
+        Console.WriteLine();
+        var s = new Settings();
+
+        if (Ask("Generate a (p)assword or (t)oken?", "p").StartsWith('t'))
+        {
+            s.Bits = ParseInt(Ask($"Bits of randomness ({MinBits}-{MaxBits})", MaxBits.ToString()), "bits");
+            s.Format = ParseFormat(Ask("Format: hex, base64, base64url, base32", "hex"));
+            Console.WriteLine();
+            return RunToken(s);
+        }
+
+        s.Sets = ParseCharset(Ask("Character sets: l=lower u=upper d=digits s=symbols", "luds"));
+        s.NoAmbiguous = Ask("Exclude look-alike characters (0 O 1 l I |)? (y/n)", "n").StartsWith('y');
+
+        if (Ask("Choose by (l)ength or target (b)its of entropy?", "l").StartsWith('b'))
+            s.Bits = ParseInt(Ask($"Target bits ({MinBits}-{MaxBits})", "128"), "bits");
+        else
+            s.Length = ParseInt(Ask($"Length (1-{MaxLength})", DefaultLength.ToString()), "length");
+
+        s.Count = ParseInt(Ask($"How many? (1-{MaxCount})", "1"), "count");
+
+        Console.WriteLine();
+        return RunPassword(s);
+    }
+
+    static string Ask(string question, string defaultValue)
+    {
+        Console.Write($"{question} [{defaultValue}]: ");
+        string? input = Console.ReadLine();
+        return string.IsNullOrWhiteSpace(input) ? defaultValue : input.Trim().ToLowerInvariant();
     }
 
     // ---------- Helpers ----------
