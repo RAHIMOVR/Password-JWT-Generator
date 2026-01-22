@@ -1,4 +1,7 @@
-﻿using System.Globalization;
+﻿// PassGen - cryptographically secure password & token generator for the terminal.
+// Run with --help for usage.
+
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -24,6 +27,8 @@ sealed class Settings
 
 static class Program
 {
+    const string Version = "1.0.0";
+
     const string Lower = "abcdefghijklmnopqrstuvwxyz";
     const string Upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const string Digits = "0123456789";
@@ -44,7 +49,8 @@ static class Program
         }
         catch (ArgumentException ex)
         {
-            Console.Error.WriteLine($"error: {ex.Message}");
+            WriteColored(ConsoleColor.Red, $"error: {ex.Message}");
+            Console.Error.WriteLine("Run 'passgen --help' for usage.");
             return 1;
         }
     }
@@ -55,6 +61,8 @@ static class Program
         bool tokenMode = a.Count > 0 && a[0] == "token";
         if (tokenMode) a.RemoveAt(0);
 
+        if (a.Contains("-h") || a.Contains("--help")) { PrintHelp(); return 0; }
+        if (a.Contains("-v") || a.Contains("--version")) { Console.WriteLine($"passgen {Version}"); return 0; }
         if (a.Contains("-i") || a.Contains("--interactive")) return Interactive();
 
         var s = new Settings();
@@ -141,16 +149,22 @@ static class Program
     static string GeneratePassword(string pool, List<string> groups, int length, bool require)
     {
         var buffer = new char[length];
-
-        // Rejection sampling: regenerate until every set is present.
-        // This keeps the result uniformly random among all valid passwords.
-        while (true)
+        try
         {
-            for (int i = 0; i < length; i++)
-                buffer[i] = pool[RandomNumberGenerator.GetInt32(pool.Length)];
+            // Rejection sampling: regenerate until every set is present.
+            // This keeps the result uniformly random among all valid passwords.
+            while (true)
+            {
+                for (int i = 0; i < length; i++)
+                    buffer[i] = pool[RandomNumberGenerator.GetInt32(pool.Length)];
 
-            if (!require || groups.All(g => buffer.Any(c => g.Contains(c))))
-                return new string(buffer);
+                if (!require || groups.All(g => buffer.Any(c => g.Contains(c))))
+                    return new string(buffer);
+            }
+        }
+        finally
+        {
+            Array.Clear(buffer); // don't leave the password lying around in memory
         }
     }
 
@@ -184,7 +198,17 @@ static class Program
         int byteCount = (bits + 7) / 8; // rounded up to whole bytes
 
         for (int i = 0; i < s.Count; i++)
-            Console.WriteLine(Encode(RandomNumberGenerator.GetBytes(byteCount), s.Format));
+        {
+            byte[] data = RandomNumberGenerator.GetBytes(byteCount);
+            try
+            {
+                Console.WriteLine(Encode(data, s.Format));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(data);
+            }
+        }
 
         if (!s.Quiet)
             Info($"{byteCount * 8} random bits | {s.Format.ToString().ToLowerInvariant()}");
@@ -309,5 +333,49 @@ static class Program
     };
 
     // Info goes to stderr so `passgen | clip` or `$(passgen)` captures only the password.
-    static void Info(string message) => Console.Error.WriteLine(message);
+    static void Info(string message) => WriteColored(ConsoleColor.DarkGray, message);
+
+    static void WriteColored(ConsoleColor color, string message)
+    {
+        var previous = Console.ForegroundColor;
+        Console.ForegroundColor = color;
+        Console.Error.WriteLine(message);
+        Console.ForegroundColor = previous;
+    }
+
+    static void PrintHelp()
+    {
+        Console.WriteLine("""
+            passgen - cryptographically secure password & token generator
+
+            Usage:
+              passgen [options]          generate password(s)
+              passgen token [options]    generate random token(s)
+              passgen -i                 interactive mode
+
+            Password options:
+              -l, --length <n>       length, 1-1024 (default 16)
+              -b, --bits <n>         target entropy, 8-256 bits; length is calculated for you
+              -c, --charset <sets>   any of l=lower u=upper d=digits s=symbols, or 'all' (default luds)
+                  --custom <chars>   use exactly these characters instead of --charset
+              -x, --no-ambiguous     exclude look-alikes: 0 O 1 l I |
+                  --no-require       don't force one character from each set
+
+            Token options:
+              -b, --bits <n>         random bits, 8-256 (default 256)
+              -f, --format <fmt>     hex | base64 | base64url | base32 (default hex)
+
+            Common:
+              -n, --count <n>        how many to generate, 1-100 (default 1)
+              -q, --quiet            print only the values, no entropy info
+              -h, --help             show this help
+              -v, --version          show version
+
+            Examples:
+              passgen -l 24
+              passgen -b 128 -c lud -x
+              passgen token -b 256 -f base64url
+              passgen -n 5 -q > passwords.txt
+            """);
+    }
 }
